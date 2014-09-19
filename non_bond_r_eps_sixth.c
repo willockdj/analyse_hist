@@ -1,0 +1,176 @@
+/**************************************************************************/
+/******* Non-bond energy calculation assuming r-eps potential *************/
+/******* format and sixth power combination rules             *************/
+/******* Dave Willock started 2nd December 1995               *************/
+/*******              added list processing May 1996          *************/
+/**************************************************************************/
+
+
+#include <stdio.h>
+#include <math.h>
+#include "maxima.h"
+#include "global_values.h"
+#include "structures.h"
+#include "data.h"
+#include "constants.h"
+
+void min_image( double *x, double *y, double *z);
+
+int pbc_interactions(double *p_dx, double *p_dy, double *p_dz, double cutoff,
+                     double cutoff_2, double *p_pos_separations,  double *p_pos_vectors);
+
+double non_bond_r_eps_sixth(atom *p_pore, int num_p_atoms,
+                            atom *p_template, int num_t_atoms, int *p_need_grad,
+                            double *p_grad)
+{
+#include "header.h"
+atom *p_tatom, *p_patom;
+
+int i,j,pot_index_t, pot_index_p,this_pair;
+int index_temp_atom,num_interactions; 
+
+double dx,dy,dz,r0,r06,r09,r,r2,r3,r6,r8,r9, eps, sum_sixth;
+double nb_energy, nb_energy_rep, nb_energy_disp;
+double pos_separations[MAX_PAIR_LIST], pos_vectors[3*MAX_PAIR_LIST];
+double rep,disp,grad_factor;
+
+double *p_grad_x, *p_grad_y, *p_grad_z;
+
+/**************************************************************************/
+/********** loop over template atoms :                 ********************/
+/********** p_tatom = pointer to current template atom ********************/
+/**************************************************************************/
+
+nb_energy_rep = 0.0;
+nb_energy_disp = 0.0;
+
+p_tatom = p_template-1;     
+for (index_temp_atom=0; index_temp_atom<=num_t_atoms ;index_temp_atom++)
+   {
+     p_tatom++;
+     pot_index_t = p_tatom->nb_list;
+
+     p_grad_x = p_grad+ 3*index_temp_atom;
+     p_grad_y = p_grad_x+1;
+     p_grad_z = p_grad_y+1;
+
+/**************************************************************************/
+/********** loop over pore atoms :                     ********************/
+/********** p_patom = pointer to current pore atom     ********************/
+/**************************************************************************/
+
+     p_patom = p_pore-1;     
+
+     for ( j=0; j<=num_p_atoms; j++)
+        {
+          p_patom++;
+          pot_index_p = p_patom->nb_list;
+
+          dx = p_tatom->x - p_patom->x;
+          dy = p_tatom->y - p_patom->y;
+          dz = p_tatom->z - p_patom->z;
+
+/**************************************************************************/
+/******* if this is a periodic pore assemble a list of interactions *******/
+/******* of this type otherwise check if the pair is in range       *******/
+/**************************************************************************/
+
+          if (pbc)
+            {
+               num_interactions = pbc_interactions( &dx, &dy, &dz, nb_ctf, nb_ctf_2,  
+                                                              &pos_separations[0], &pos_vectors[0]);
+            }
+          else
+            {
+               r2 = dx*dx + dy*dy + dz*dz;
+            
+               if (r2 <= nb_ctf_2)
+                 {
+                    num_interactions=0;
+                    pos_separations[0]= sqrt(r2);
+                    pos_vectors[0]= dx;
+                    pos_vectors[1]= dy;
+                    pos_vectors[2]= dz;
+                 }
+               else
+                 {
+                    num_interactions=-1;
+                 }
+            }
+
+/*************************************************************************/
+/******* Only bother with list if there are some members in it! **********/
+/*************************************************************************/
+
+          if (num_interactions >= 0)
+            {
+
+/*************************************************************************/
+/******* Apply combining rules to the atom potent parameters   ***********/
+/******* using the nb_list parameter each atom should have for ***********/
+/******* referencing the potent list                           ***********/
+/******* When reading r-eps potentials a= r; b= eps            ***********/
+/*************************************************************************/
+
+                sum_sixth = potent[pot_index_t].a6 + potent[pot_index_p].a6;
+
+                eps = 2.0 * potent[pot_index_t].sqrt_b * 
+                            potent[pot_index_p].sqrt_b *
+                            potent[pot_index_t].a3 *
+                            potent[pot_index_p].a3 / sum_sixth;
+
+                r06 = sum_sixth / 2.0;
+
+                r0 = pow(r06,(1.0/6.0));
+ 
+                r09 = r0 * r0 * r0 * r06;
+
+/*************************************************************************/
+
+               rep = 0;
+               disp= 0;
+               for (this_pair= 0; this_pair <= num_interactions; this_pair++) 
+                 {
+                    r = pos_separations[this_pair];
+
+                    r2 = r*r;
+                    r3 = r2*r;
+                    r6 = r3 * r3;
+                    r9 = r6 * r3;
+                
+/******* Repulsion part of potential *************************************/
+
+                    rep = 2.0 * eps * r09/r9;
+
+/******* Dispersion part of potential ************************************/
+
+                    disp= 3.0 * eps * r06/r6;
+
+/****** Will calculate the derivatives ***********************************/
+
+                    if (*p_need_grad)
+                     {
+                        grad_factor= 9.0*rep/r2;
+                        *p_grad_x -= grad_factor* pos_vectors[3*this_pair]  ;
+                        *p_grad_y -= grad_factor* pos_vectors[3*this_pair+1];
+                        *p_grad_z -= grad_factor* pos_vectors[3*this_pair+2];
+
+                        r8 = r6 * r2;
+                        grad_factor= 18.0*eps*r06/r8;
+                        *p_grad_x += grad_factor* pos_vectors[3*this_pair]  ;
+                        *p_grad_y += grad_factor* pos_vectors[3*this_pair+1];
+                        *p_grad_z += grad_factor* pos_vectors[3*this_pair+2];
+                      }
+
+                    p_tatom->vdw_energy += rep-disp;
+                    p_patom->vdw_energy += rep-disp;
+                    nb_energy_rep       += rep; 
+                    nb_energy_disp      -= disp;
+                }
+             }
+         }
+   }
+
+nb_energy= nb_energy_rep + nb_energy_disp;
+return nb_energy;
+}

@@ -1,0 +1,1 @@
+#define LINESIZ 256
